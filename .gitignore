@@ -5,3 +5,6 @@ __pycache__/
 .ruff_cache/
 .venv/
 *.egg-info/
+
+# Your own test voice notes stay on your machine
+test_audio/

@@ -30,6 +30,18 @@ uvicorn waagent.main:create_app --factory --reload --port 8080
 Meta webhook'unu yerelde denemek için bir tünel (ör. `cloudflared tunnel --url http://localhost:8080`) aç ve
 Meta uygulamasında callback URL'yi `https://<tünel>/webhook` olarak gir.
 
+## Sesli sipariş hattını denemek (Gemini)
+
+> Ücretsiz Gemini anahtarıyla **yalnızca uydurma test verisi** kullan. Google ücretsiz katmandaki
+> içerikleri ürün geliştirmek için kullanabilir ve insanlar okuyabilir.
+
+```bash
+echo "GEMINI_API_KEY=buraya-anahtarin" >> .env      # .env GitHub'a gitmez
+python scripts/try_order.py --text "Metro'ya yarın için 20 kilo dana kıyma, 10 kasa domates"
+mkdir -p test_audio                                  # ses dosyaların da GitHub'a gitmez
+python scripts/try_order.py --dir test_audio
+```
+
 ## Yapı
 
 ```
