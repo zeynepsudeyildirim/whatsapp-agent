@@ -32,6 +32,10 @@ class OrderItem(BaseModel):
     product: str = Field(description="Product name exactly as the speaker said it, in their language")
     quantity: float = Field(gt=0)  # float keeps the JSON schema simple for every provider
     unit: Unit
+    unit_word: str | None = Field(
+        default=None,
+        description="The unit word exactly as spoken/written (e.g. 'koli', 'kasa', 'kilo'); null if none",
+    )
     note: str | None = Field(default=None, description="e.g. 'yağsız', 'organic'; null if none")
 
 

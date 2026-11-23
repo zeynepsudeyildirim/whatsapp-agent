@@ -185,3 +185,60 @@ async def test_unclear_audio_is_not_composed():
 async def test_requires_exactly_one_input():
     with pytest.raises(ValueError):
         await draft_supplier_message(FakeLLM({}), today=TODAY, suppliers=SUPPLIERS)
+
+
+# --- unit words are mapped by code ---------------------------------------------------------
+
+from waagent.pipeline.units import normalise_units, unit_for_word  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "word,unit",
+    [
+        ("koli", Unit.BOX),
+        ("Koli", Unit.BOX),
+        ("koliyi", Unit.BOX),
+        ("kasa", Unit.CRATE),
+        ("kasalık", Unit.CRATE),
+        ("Kisten", Unit.CRATE),
+        ("Kartons", Unit.BOX),
+        ("boxes", Unit.BOX),
+        ("kilo", Unit.KG),
+        ("Stück", Unit.PIECE),
+        ("şişe", Unit.BOTTLE),
+        ("çuval", Unit.BAG),
+    ],
+)
+def test_unit_words(word, unit):
+    assert unit_for_word(word) == unit
+
+
+def test_unknown_unit_word_keeps_model_guess():
+    assert unit_for_word("demet") is None
+    item = OrderItem(product="maydanoz", quantity=3, unit=Unit.OTHER, unit_word="demet")
+    assert normalise_units([item])[0].unit == Unit.OTHER
+
+
+async def test_koli_misread_as_crate_is_corrected():
+    """Regression: gemini-flash-lite returned crate for '5 koli salatalık'."""
+    u = UNDERSTOOD.model_copy(
+        update={
+            "items": [OrderItem(product="salatalık", quantity=5, unit=Unit.CRATE, unit_word="koli")]
+        }
+    )
+    text = "Hello, please deliver on 24.11.2026:\n- 5 boxes of cucumbers"
+    back = BackExtraction(
+        items=[OrderItem(product="cucumbers", quantity=5, unit=Unit.CRATE, unit_word="boxes")],
+        delivery_date=date(2026, 11, 24),
+    )
+    llm = FakeLLM(
+        {
+            UnderstoodMessage: [u],
+            ComposedMessage: [ComposedMessage(text=text)],
+            BackExtraction: [back],
+        }
+    )
+    draft = await draft_supplier_message(llm, today=TODAY, suppliers=SUPPLIERS, text="...")
+    assert draft.understood.items[0].unit == Unit.BOX
+    assert "• 5 koli salatalık" in draft.summary_for_admin
+    assert draft.ready_for_approval

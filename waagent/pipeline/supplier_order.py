@@ -15,6 +15,7 @@ from waagent.pipeline.schemas import (
     UnderstoodMessage,
     Unit,
 )
+from waagent.pipeline.units import normalise_units
 from waagent.pipeline.verify import VerificationResult, resolve_supplier, verify
 
 LANGUAGE_NAMES = {
@@ -32,8 +33,10 @@ Rules:
 - Never invent products, quantities, units or dates. If something is unclear or inaudible,
   leave it out of the structured fields and describe it in `unclear`.
 - Keep product names in the speaker's own words and language.
+- For every item put the unit word exactly as said in `unit_word` (e.g. "koli", "kasa", "kilo").
 - Map units: kilo/kg->kg, gram->g, litre->l, adet/tane/Stück->piece, kasa/Kiste->crate,
   koli/Karton->box, paket->pack, şişe->bottle, kutu (can)->can, çuval/torba->bag; else other.
+  Note: "koli" is a cardboard box (box), "kasa" is a crate (crate) — they are different.
 - Resolve relative dates (yarın, öbür gün, Cuma, morgen, tomorrow...) against today's date.
 """
 
@@ -42,8 +45,12 @@ You write short, polite, business-like WhatsApp messages from a restaurant to it
 Rules:
 - Write in {language}. Use only the facts given in the JSON. Add nothing else.
 - Write every quantity with digits exactly as given (e.g. 2.5 may be written 2,5 in German).
-- One line per item: quantity, unit, product. Translate product names naturally; if a glossary
-  term is given, use the glossary translation exactly.
+- Put each item on its own line starting with "- ": quantity, unit, product.
+- Write units and products the way a native speaker would in a business message, with correct
+  plurals and grammar (English: "30 lemons", "5 boxes of cucumbers", "10 crates of tomatoes";
+  German: "10 Kisten Tomaten", "5 Kartons Gurken"). The unit must keep its meaning exactly:
+  box = cardboard box (Karton), crate = crate (Kiste); never swap them.
+- Translate product names naturally; if a glossary term is given, use it exactly.
 - State the delivery date as a calendar date ({date_hint}).
 - No emojis, no prices, no assumptions about availability.
 """
@@ -51,6 +58,7 @@ Rules:
 _BACK_SYSTEM = """\
 You read a message a restaurant sent to its supplier and extract the ordered items and the
 delivery date exactly as written. Do not correct or complete anything.
+For every item put the unit word exactly as written in `unit_word` (e.g. "Kisten", "boxes").
 """
 
 _UNIT_TR = {
@@ -125,6 +133,7 @@ async def draft_supplier_message(
     understood = await llm.structured(
         system=_UNDERSTAND_SYSTEM, prompt=prompt, schema=UnderstoodMessage, audio=audio
     )
+    understood = understood.model_copy(update={"items": normalise_units(understood.items)})
 
     clarify = list(understood.unclear)
     supplier_id = resolve_supplier(
@@ -143,8 +152,11 @@ async def draft_supplier_message(
 
     _, lang = suppliers[supplier_id]
     language = LANGUAGE_NAMES.get(lang, lang)
+    # The composer sees only the authoritative unit, not the original word it was mapped from.
     facts = understood.model_dump(
-        mode="json", include={"intent", "items", "delivery_date", "free_text"}
+        mode="json",
+        include={"intent", "items", "delivery_date", "free_text"},
+        exclude={"items": {"__all__": {"unit_word"}}},
     )
     compose_prompt = f"JSON:\n{json.dumps(facts, ensure_ascii=False)}"
     if glossary:
@@ -164,6 +176,7 @@ async def draft_supplier_message(
             prompt=f"Today is {today.isoformat()}.\nMessage:\n{composed.text}",
             schema=BackExtraction,
         )
+        back = back.model_copy(update={"items": normalise_units(back.items)})
         verification = verify(understood, composed.text, back)
         outbound = composed.text
         if verification.ok:
