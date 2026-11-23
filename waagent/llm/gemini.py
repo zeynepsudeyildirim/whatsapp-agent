@@ -5,8 +5,10 @@ products, and human reviewers may read them. Only synthetic test data may be sen
 free-tier key. Production (users in the EU) requires the paid tier.
 """
 
+import asyncio
 import base64
 import json
+import random
 
 import httpx
 from pydantic import ValidationError
@@ -14,17 +16,46 @@ from pydantic import ValidationError
 from waagent.llm.base import Audio, LLMError, T
 
 _BASE = "https://generativelanguage.googleapis.com/v1beta"
+_RETRYABLE = {429, 500, 502, 503, 504}
 
 
 class GeminiLLM:
-    def __init__(self, api_key: str, model: str, *, timeout: float = 60.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout: float = 60.0,
+        max_attempts: int = 5,
+        base_delay: float = 2.0,
+    ):
         self._model = model
+        self._max_attempts = max_attempts
+        self._base_delay = base_delay
         self._http = httpx.AsyncClient(
             base_url=_BASE, headers={"x-goog-api-key": api_key}, timeout=timeout
         )
 
     async def aclose(self) -> None:
         await self._http.aclose()
+
+    async def _post_with_retry(self, path: str, body: dict) -> httpx.Response:
+        """Retries transient failures (overload, rate limit, network) with exponential backoff."""
+        delay = self._base_delay
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                resp = await self._http.post(path, json=body)
+            except httpx.TransportError as exc:
+                if attempt == self._max_attempts:
+                    raise LLMError(f"Gemini unreachable: {exc}") from exc
+            else:
+                if resp.status_code == 200:
+                    return resp
+                if resp.status_code not in _RETRYABLE or attempt == self._max_attempts:
+                    raise LLMError(f"Gemini HTTP {resp.status_code}: {resp.text[:500]}")
+            await asyncio.sleep(delay + random.uniform(0, delay / 2))
+            delay *= 2
+        raise AssertionError("unreachable")
 
     async def structured(
         self,
@@ -53,9 +84,7 @@ class GeminiLLM:
                 "responseJsonSchema": schema.model_json_schema(),
             },
         }
-        resp = await self._http.post(f"/models/{self._model}:generateContent", json=body)
-        if resp.status_code != 200:
-            raise LLMError(f"Gemini HTTP {resp.status_code}: {resp.text[:500]}")
+        resp = await self._post_with_retry(f"/models/{self._model}:generateContent", body)
 
         data = resp.json()
         try:
